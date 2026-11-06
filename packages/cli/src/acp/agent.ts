@@ -137,7 +137,11 @@ export const connect = Effect.fnUntraced(function* (client: OpenCodeClient, stre
   return acp.agent
 })
 
-const Steering = Schema.Struct({ sessionId: Schema.String, prompt: Schema.mutable(Schema.Array(Schema.Any)) })
+const Steering = Schema.Struct({
+  sessionId: Schema.String,
+  messageId: Schema.optional(Schema.String),
+  prompt: Schema.mutable(Schema.Array(Schema.Any)),
+})
 
 function parseSteering(params: unknown) {
   return Schema.decodeUnknownResult(Steering)(params).pipe(

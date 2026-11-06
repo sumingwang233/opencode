@@ -184,6 +184,23 @@ describe("acp mid-turn steering over the wire", () => {
     expect(acp.server.prompts).toEqual([expect.objectContaining({ text: "redirect", delivery: "steer", resume: false })])
   })
 
+
+  test("a client message id addresses the steering prompt", async () => {
+    await using acp = await startSession()
+    acp.server.active.add(acp.sessionId)
+
+    expect(
+      await acp.requestExt("_session/steering", {
+        sessionId: acp.sessionId,
+        messageId: "delivery-1",
+        prompt: [{ type: "text", text: "redirect" }],
+      }),
+    ).toEqual({ outcome: "injected" })
+    expect(acp.server.prompts).toEqual([
+      expect.objectContaining({ id: "msg_delivery-1", text: "redirect", delivery: "steer", resume: false }),
+    ])
+  })
+
   test("rejects an unknown session and malformed params", async () => {
     await using acp = await startSession()
 

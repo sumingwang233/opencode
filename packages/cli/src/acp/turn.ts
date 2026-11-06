@@ -1,5 +1,6 @@
 import type { CancelNotification, PromptRequest, PromptResponse, RequestError } from "@agentclientprotocol/sdk"
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client/effect"
+import { SessionMessage } from "@opencode/schema/session-message"
 import { TokenUsage } from "@opencode/schema/token-usage"
 import {
   Cause,
@@ -29,7 +30,12 @@ import { ACPPrompt } from "./prompt"
 import type { ACPSessions, Attached } from "./sessions"
 import { ACPTranslate } from "./translate"
 
-export type SteeringRequest = { readonly sessionId: string; readonly prompt: PromptRequest["prompt"] }
+export type SteeringRequest = {
+  readonly sessionId: string
+  /** The caller's delivery id, reused when the same request is retried. */
+  readonly messageId?: string
+  readonly prompt: PromptRequest["prompt"]
+}
 export type SteeringResponse =
   | { readonly outcome: "injected" }
   | { readonly outcome: "promptRequired"; readonly reason: "noRunningTurn" }
@@ -422,7 +428,11 @@ export const make = Effect.fnUntraced(function* (input: {
       const attached = yield* input.sessions.require(params.sessionId)
       const active = yield* input.client.session.active().pipe(Effect.catch(ACPClient.classify))
       if (!(attached.id in active)) return { outcome: "promptRequired", reason: "noRunningTurn" } as const
-      const prompt = yield* ACPPrompt.prepare(yield* input.catalog.get(attached.cwd), params.prompt)
+      const prepared = yield* ACPPrompt.prepare(yield* input.catalog.get(attached.cwd), params.prompt)
+      // Reusing the caller's id makes a retry the same message instead of a second one.
+      const prompt = params.messageId
+        ? { ...prepared, start: { ...prepared.start, id: steerID(params.messageId) } }
+        : prepared
       yield* submitSynthetic(attached, prompt)
       // Without resume, a session that went idle after the check keeps the steer queued instead of starting a turn.
       yield* submitInput(attached, prompt, { resume: false })
@@ -441,6 +451,10 @@ export const make = Effect.fnUntraced(function* (input: {
     }),
   } satisfies Interface
 })
+
+function steerID(messageId: string): SessionMessage.ID {
+  return SessionMessage.ID.make(messageId.startsWith("msg_") ? messageId : `msg_${messageId}`)
+}
 
 function aborted(signal: AbortSignal) {
   return Effect.callback<void>((resume) => {
