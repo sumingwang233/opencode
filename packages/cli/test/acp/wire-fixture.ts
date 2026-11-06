@@ -600,6 +600,7 @@ function startServer(options: WireOptions, changed: () => void) {
   const interrupts: string[] = []
   const replies: Array<{ readonly sessionID: string; readonly requestID: string; readonly decision: string }> = []
   const cancelledForms: Array<{ readonly sessionID: string; readonly formID: string; readonly message?: string }> = []
+  const cancelledInbox: Array<{ readonly sessionID: string; readonly inboxID: string }> = []
   const repliedForms: FormReply[] = []
   const mcp: Array<{ readonly name: string; readonly directory?: string; readonly config: unknown }> = []
   const fake = {
@@ -616,6 +617,7 @@ function startServer(options: WireOptions, changed: () => void) {
     interrupts,
     replies,
     cancelledForms,
+    cancelledInbox,
     repliedForms,
     mcp,
     send(...events: ReadonlyArray<OpenCodeEvent>) {
@@ -752,6 +754,12 @@ function startServer(options: WireOptions, changed: () => void) {
       },
       "/api/session/active": {
         GET: route(() => Response.json({ data: Object.fromEntries([...fake.active].map((id) => [id, { type: "running" }])) })),
+      },
+      "/api/session/:sessionID/inbox/:inboxID": {
+        DELETE: route((req) => {
+          fake.cancelledInbox.push({ sessionID: req.params.sessionID, inboxID: req.params.inboxID })
+          return noContent()
+        }),
       },
       "/api/session/:sessionID": {
         GET: route((req) => {

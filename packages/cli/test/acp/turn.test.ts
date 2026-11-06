@@ -201,6 +201,35 @@ describe("acp mid-turn steering over the wire", () => {
     ])
   })
 
+
+  test("a turn that ends before submission leaves nothing queued", async () => {
+    let acp: Awaited<ReturnType<typeof startSession>> | undefined
+    const started = await startSession({
+      onPrompt: () => {
+        acp?.server.active.delete(acp.sessionId)
+        return []
+      },
+    })
+    acp = started
+    try {
+      acp.server.active.add(acp.sessionId)
+
+      expect(
+        await acp.requestExt("_session/steering", {
+          sessionId: acp.sessionId,
+          messageId: "delivery-race",
+          prompt: [{ type: "text", text: "redirect" }],
+        }),
+      ).toEqual({ outcome: "promptRequired", reason: "noRunningTurn" })
+      expect(acp.server.prompts).toEqual([
+        expect.objectContaining({ id: "msg_delivery-race", text: "redirect", delivery: "steer", resume: false }),
+      ])
+      expect(acp.server.cancelledInbox).toEqual([{ sessionID: acp.sessionId, inboxID: "msg_delivery-race" }])
+    } finally {
+      await started[Symbol.asyncDispose]()
+    }
+  })
+
   test("rejects an unknown session and malformed params", async () => {
     await using acp = await startSession()
 

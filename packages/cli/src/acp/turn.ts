@@ -79,6 +79,8 @@ export const make = Effect.fnUntraced(function* (input: {
   const scope = yield* Effect.scope
   const drainTimeout = yield* CancelDrainTimeout
   const turns = yield* FiberMap.make<string, PromptResponse, ACPError.Failure>()
+  /** Steers submitted during the current turn, so one that was not consumed before the turn ended is dropped. */
+  const pendingSteers = new Map<Attached["id"], Set<SessionMessage.ID>>()
 
   const open = Effect.fnUntraced(function* (ctx: ACPTranslate.TurnContext, state: Ref.Ref<ACPTranslate.TurnState>) {
     // Parented to the service scope; the session scope may already be closed.
@@ -268,6 +270,27 @@ export const make = Effect.fnUntraced(function* (input: {
       .pipe(Effect.catch(ACPClient.classify))
   })
 
+  const track = (sessionID: Attached["id"], id: SessionMessage.ID) => {
+    const ids = pendingSteers.get(sessionID) ?? new Set<SessionMessage.ID>()
+    ids.add(id)
+    pendingSteers.set(sessionID, ids)
+  }
+
+  const cancelSteer = Effect.fnUntraced(function* (sessionID: Attached["id"], inboxID: SessionMessage.ID) {
+    pendingSteers.get(sessionID)?.delete(inboxID)
+    yield* input.client.session.inbox
+      .cancel({ sessionID, inboxID })
+      .pipe(Effect.catch(ACPClient.classify), Effect.ignore)
+  })
+
+  /** A turn that ends with a steer still queued would otherwise replay it in the next turn. */
+  const dropPendingSteers = Effect.fnUntraced(function* (sessionID: Attached["id"]) {
+    const ids = pendingSteers.get(sessionID)
+    if (!ids) return
+    pendingSteers.delete(sessionID)
+    yield* Effect.forEach(ids, (inboxID) => cancelSteer(sessionID, inboxID), { discard: true })
+  })
+
   const submit = Effect.fnUntraced(function* (attached: Attached, prompt: ACPPrompt.Prepared) {
     const sessionID = attached.id
     yield* submitSynthetic(attached, prompt)
@@ -401,6 +424,7 @@ export const make = Effect.fnUntraced(function* (input: {
       (turn) => execute(attached, prompt, turn),
       (turn, exit) => handoff(attached, turn, exit),
     ).pipe(Effect.interruptible, Effect.exit)
+    yield* dropPendingSteers(attached.id)
     return yield* settle(attached, yield* Ref.get(state), exit)
   })
 
@@ -433,9 +457,16 @@ export const make = Effect.fnUntraced(function* (input: {
       const prompt = params.messageId
         ? { ...prepared, start: { ...prepared.start, id: steerID(params.messageId) } }
         : prepared
+      track(attached.id, prompt.start.id)
       yield* submitSynthetic(attached, prompt)
       // Without resume, a session that went idle after the check keeps the steer queued instead of starting a turn.
       yield* submitInput(attached, prompt, { resume: false })
+      // The turn can end between the check above and the submission; drop what it left behind and report the truth.
+      const running = yield* input.client.session.active().pipe(Effect.catch(ACPClient.classify))
+      if (!(attached.id in running)) {
+        yield* cancelSteer(attached.id, prompt.start.id)
+        return { outcome: "promptRequired", reason: "noRunningTurn" } as const
+      }
       return { outcome: "injected" } as const
     }),
     cancel: Effect.fnUntraced(function* (params) {
